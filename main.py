@@ -34,12 +34,19 @@ def main():
     # =========================================
     # PHASE 2: SYNTAX ANALYSIS
     # =========================================
-    parsed = syntax_analysis(lines)
+    parsed, syntax_errors = syntax_analysis(lines)
 
     print("\n===== PARSED OUTPUT =====")
     for item in parsed:
         print(item)
 
+    if syntax_errors:
+        print("\n===== SYNTAX ERRORS =====")
+        for e in syntax_errors:
+            print(e)
+        print("\n❌ Compilation Halted Phase 2: Syntax Errors Exists!")
+        return
+        
     print("\nPhase 1 & Phase 2 Completed Successfully!")
     
     # =========================================

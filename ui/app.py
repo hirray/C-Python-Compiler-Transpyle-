@@ -7,7 +7,22 @@ import streamlit as st
 # Ensure project root is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import compiler phases
+import importlib
+import phases.lexer
+import phases.parser
+import phases.semantic
+import phases.intermediate
+import phases.optimizer
+import phases.generator
+
+# Force hot-reload modules in development so Streamlit catches live changes!
+importlib.reload(phases.lexer)
+importlib.reload(phases.parser)
+importlib.reload(phases.semantic)
+importlib.reload(phases.intermediate)
+importlib.reload(phases.optimizer)
+importlib.reload(phases.generator)
+
 from phases.lexer import lexical_analysis
 from phases.parser import syntax_analysis
 from phases.semantic import semantic_analysis
@@ -205,9 +220,17 @@ with col2:
                     time.sleep(0.3)
                     
                     st.write("◈ **Phase 2:** Syntax Analysis...")
-                    parsed = syntax_analysis(lines)
+                    parsed, syntax_errors = syntax_analysis(lines)
                     st.session_state.phases["parsed"] = parsed
+                    st.session_state.phases["syntax_errors"] = syntax_errors
                     time.sleep(0.3)
+                    
+                    if syntax_errors:
+                        status.update(label="❌ Syntax Errors", state="error")
+                        for e in syntax_errors:
+                            st.error(e)
+                        st.session_state.py_output = ""
+                        st.stop()
                     
                     st.write("◈ **Phase 3:** Semantic Checking...")
                     symbol_table_updated, errors = semantic_analysis(parsed, symbol_table)

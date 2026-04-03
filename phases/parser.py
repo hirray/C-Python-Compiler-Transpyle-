@@ -102,6 +102,8 @@ def identify_statement(line):
     if ("++") in stripped or ("--") in stripped:
         if stripped.endswith(";"):
             return "increment"
+        else:
+            return "error: Missing terminator (semicolon) in increment/decrement statement"
 
     # =========================================
     # Declaration
@@ -113,23 +115,47 @@ def identify_statement(line):
         clean = stripped.rstrip("{").strip()  # handle: int foo() {
         if "(" in clean and ")" in clean and not clean.endswith(";"):
             return "function"
+            
+        # Standard Variable Declaration validations
+        if not stripped.endswith(";"):
+            return "error: Missing terminator (semicolon) in variable declaration"
+            
+        # Catch empty Right hand side assignments
+        if "=" in stripped:
+            right_side = stripped.split("=", 1)[1].strip()
+            if right_side == ";" or right_side == "":
+                return "error: Missing value evaluation on right hand side of declaration"
+                
         # Otherwise it's a plain variable declaration
         return "declaration"
 
     # =========================================
     # Function call  (name(...); )
     # =========================================
-    if "(" in stripped and ")" in stripped and stripped.endswith(";"):
-        func_name = stripped.split("(")[0].strip()
-        # Exclude known keywords and IO functions already handled above
-        if func_name not in CONTROL_KEYWORDS and func_name not in IO_FUNCTIONS:
-            if func_name.replace("_", "").isalnum():
-                return "call"
+    if "(" in stripped and ")" in stripped:
+        if not stripped.endswith(";") and not stripped.endswith("{"):
+            if stripped.startswith("if") or stripped.startswith("while") or stripped.startswith("for") or stripped.startswith("switch"):
+                pass # loops can skip
+            else:
+                return "error: Missing terminator (semicolon) in function call"
+                
+        if stripped.endswith(";"):
+            func_name = stripped.split("(")[0].strip()
+            # Exclude known keywords and IO functions already handled above
+            if func_name not in CONTROL_KEYWORDS and func_name not in IO_FUNCTIONS:
+                if func_name.replace("_", "").isalnum():
+                    return "call"
 
     # =========================================
     # Assignment / expression statement
     # =========================================
-    if "=" in stripped and stripped.endswith(";"):
+    if "=" in stripped:
+        if not stripped.endswith(";"):
+            return "error: Missing terminator (semicolon) in assignment statement"
+            
+        right_side = stripped.split("=", 1)[1].strip()
+        if right_side == ";" or right_side == "":
+            return "error: Missing evaluation on right hand side of assignment"
         return "assignment"
 
     # =========================================
@@ -138,7 +164,7 @@ def identify_statement(line):
     if "}" in stripped:
         return "block_end"
 
-    return "unknown"
+    return "error: Unrecognized syntax or missing data type"
 
 
 # =========================================
@@ -149,6 +175,7 @@ from utils.preprocessor import remove_comments
 
 def syntax_analysis(lines):
     parsed_data = []
+    syntax_errors = []
     in_main = False       # track when we are inside main()'s body
     main_depth = 0        # brace depth inside main
 
@@ -197,6 +224,15 @@ def syntax_analysis(lines):
             if stmt_type == "empty":
                 continue
 
+            # Catch explicit syntax errors!
+            if stmt_type.startswith("error: "):
+                error_msg = stmt_type.split("error: ")[1]
+                syntax_errors.append(f"Syntax Error ({error_msg}) on line: '{raw_original}'")
+                continue
+            elif stmt_type == "unknown":
+                syntax_errors.append(f"Syntax Error (Unrecognized structures) on line: '{raw_original}'")
+                continue
+
             # Track main() body - skip its block markers so they don't appear in IR
             if stmt_type == "main":
                 in_main = True
@@ -222,4 +258,4 @@ def syntax_analysis(lines):
                 "in_main": in_main
             })
 
-    return parsed_data
+    return parsed_data, syntax_errors
