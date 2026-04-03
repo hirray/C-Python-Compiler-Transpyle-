@@ -178,7 +178,8 @@ with col1:
         st.session_state.c_source = u_file.read().decode("utf-8")
         st.toast("File Loaded!", icon="📁")
 
-    c_code_input = st.text_area("Source Code", value=st.session_state.c_source, height=350, label_visibility="collapsed", key="c_editor")
+    c_code_input =st.session_state.c_source
+    st.text_area("source code",value=c_code_input,height=350, label_visibility="collapsed")
 
 with col2:
     st.markdown("#### ⚡ Pipeline & Result")
