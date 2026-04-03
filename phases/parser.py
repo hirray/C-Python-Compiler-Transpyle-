@@ -2,6 +2,8 @@
 # PHASE 2: SYNTAX ANALYSIS (PARSER)
 # =========================================
 
+import re
+
 # C return types and modifiers - used to identify declarations and function DEFINITIONS
 C_DECLARATION_KEYWORDS = {"int", "void", "char", "float", "double", "long", "short", "unsigned", "signed", "struct", "union", "enum", "const", "static", "volatile", "extern", "register"}
 
@@ -70,30 +72,71 @@ def identify_statement(line):
     # If
     # =========================================
     if stripped.startswith("if") and "(" in stripped:
+        cond = stripped[stripped.find("(")+1 : stripped.rfind(")")].strip()
+        if not cond:
+            return "error: Missing condition in if statement"
         return "if"
 
     # =========================================
     # For
     # =========================================
     if stripped.startswith("for") and "(" in stripped:
+        cond = stripped[stripped.find("(")+1 : stripped.rfind(")")].strip()
+        if not cond:
+            return "error: Missing condition in for statement"
         return "for"
 
     # =========================================
     # While
     # =========================================
     if stripped.startswith("while") and "(" in stripped:
+        cond = stripped[stripped.find("(")+1 : stripped.rfind(")")].strip()
+        if not cond:
+            return "error: Missing condition in while statement"
         return "while"
 
     # =========================================
     # Output (printf / puts)
     # =========================================
     if stripped.startswith("printf") or stripped.startswith("puts"):
+        if not stripped.endswith(";"):
+            return "error: Missing terminator (semicolon) in output statement"
+        
+        # Robust IO Argument Validation
+        if stripped.startswith("printf"):
+            m = re.match(r'printf\s*\(\s*(".*?")\s*((?:,\s*[^,\)]+)*)\s*\)\s*;', stripped)
+            if not m:
+                # Catch dangling commas: printf("...", );
+                if re.search(r',\s*\)\s*;$', stripped):
+                    return "error: Dangling comma or missing argument in printf"
+                return "output" # Fallback if regex fails but basic syntax is ok
+
+            fmt_string = m.group(1)[1:-1]
+            args_raw = m.group(2).strip()
+            
+            # Count specifiers
+            specifiers = re.findall(r'%[-+ #0]*\d*(?:\.\d+)?[dioufFeEgGxXcsSp]|%l[diouf]', fmt_string)
+            # Count arguments (split by top-level commas)
+            args = [a.strip() for a in args_raw.lstrip(",").split(",") if a.strip()]
+            
+            if len(specifiers) > len(args):
+                return f"error: Missing argument for format specifier (expected {len(specifiers)}, got {len(args)})"
+            elif len(specifiers) < len(args):
+                return f"error: Too many arguments for format specifier (expected {len(specifiers)}, got {len(args)})"
+        
         return "output"
 
     # =========================================
     # Input (scanf / gets)
     # =========================================
     if stripped.startswith("scanf") or stripped.startswith("gets"):
+        if not stripped.endswith(";"):
+            return "error: Missing terminator (semicolon) in input statement"
+            
+        if stripped.startswith("scanf"):
+             # Simple validation for scanf
+             if re.search(r',\s*\)\s*;$', stripped):
+                return "error: Dangling comma or missing argument in scanf"
         return "input"
 
     # =========================================
@@ -153,9 +196,16 @@ def identify_statement(line):
         if not stripped.endswith(";"):
             return "error: Missing terminator (semicolon) in assignment statement"
             
-        right_side = stripped.split("=", 1)[1].strip()
-        if right_side == ";" or right_side == "":
+        parts = stripped.split("=", 1)
+        left_side = parts[0].strip()
+        right_side = parts[1].strip()
+        
+        if right_side == ";" or not right_side.rstrip(";").strip():
             return "error: Missing evaluation on right hand side of assignment"
+            
+        if not left_side:
+            return "error: Missing target variable in assignment"
+            
         return "assignment"
 
     # =========================================
@@ -187,6 +237,34 @@ def syntax_analysis(lines):
     
     # Re-split into lines
     clean_lines = clean_text.split("\n")
+
+    # [NEW] PHASE 2.1: Structural Integrity Verification (Braces/Parentheses)
+    # =========================================
+    brace_stack = []
+    paren_stack = []
+    
+    char_text = "".join(clean_lines)
+    for i, char in enumerate(char_text):
+        if char == '{': brace_stack.append(i)
+        elif char == '}':
+            if not brace_stack:
+                syntax_errors.append("Syntax Error (Mismatched '}' - closing brace without opening brace)")
+                break
+            brace_stack.pop()
+        elif char == '(': paren_stack.append(i)
+        elif char == ')':
+            if not paren_stack:
+                syntax_errors.append("Syntax Error (Mismatched ')' - closing parenthesis without opening parenthesis)")
+                break
+            paren_stack.pop()
+            
+    if brace_stack:
+        syntax_errors.append("Syntax Error (Mismatched '{' - unclosed opening brace)")
+    if paren_stack:
+        syntax_errors.append("Syntax Error (Mismatched '(' - unclosed opening parenthesis)")
+
+    if syntax_errors:
+        return [], syntax_errors
 
     for line in clean_lines:
         raw_original = line.strip()
