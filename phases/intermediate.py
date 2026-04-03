@@ -10,7 +10,7 @@ from utils.mappings import OPERATOR_MAP, INC_DEC_MAP, SCANF_TYPE_MAP, FORMAT_SPE
 # HELPER: Apply logical operator mappings
 # Only applies outside of quoted strings
 # =========================================
-def apply_operator_mapping(line):
+def apply_operator_mapping(line, addressed_vars=None):
     # Do not touch string literals
     if '"' in line:
         # Only replace operators in the part OUTSIDE the string
@@ -22,11 +22,39 @@ def apply_operator_mapping(line):
             else:
                 for op, py_op in OPERATOR_MAP.items():
                     part = part.replace(op, py_op)
+                part = re.sub(r'\b(\d*\.\d+|\d+\.)[fF]\b', r'\1', part)
                 result.append(part)
         return "".join(result)
 
     for op, py_op in OPERATOR_MAP.items():
         line = line.replace(op, py_op)
+    line = re.sub(r'\b(\d*\.\d+|\d+\.)[fF]\b', r'\1', line)
+
+    # Handle struct/pointer usages
+    line = line.replace("->", ".")
+    
+    # Handle pointer indirection / dereference regex *var -> var[0]
+    line = re.sub(r'(^|\W)\*([a-zA-Z_]\w*)', r'\1\2[0]', line)
+    
+    # Handle address-of &var -> _REF___ protector temporarily
+    line = re.sub(r'(^|\W)&([a-zA-Z_]\w*)', r'\1\2_REF___', line)
+
+    # Handle malloc usage inline
+    if "malloc" in line:
+        line = re.sub(r'malloc\s*\((.*)\)', lambda m: f"[0] * ({re.sub(r'sizeof\s*\([^)]+\)', '1', m.group(1))})", line)
+
+    # Addressed Variables Reference Mapping -> replace primitive var usages with var[0]
+    if addressed_vars:
+        for var in addressed_vars:
+            line = re.sub(r'\b' + var + r'\b(?!\s*\[)', f'{var}[0]', line)
+            
+        # Restore addressed var protectors into raw references
+        for var in addressed_vars:
+            line = line.replace(f'{var}_REF___', var)
+
+    # Fallback to restore unknown references gracefully 
+    line = re.sub(r'\b([a-zA-Z_]\w*)_REF___', r'\1', line)
+
     return line
 
 
@@ -36,7 +64,7 @@ def apply_operator_mapping(line):
 # e.g. printf("Val: %d\n", x)  ->  print(f"Val: {x}")
 # e.g. printf("Hello\n")       ->  print("Hello")
 # =========================================
-def convert_printf(line):
+def convert_printf(line, addressed_vars=None):
     # Strip trailing ; and whitespace
     line = line.strip().rstrip(";").strip()
 
@@ -63,8 +91,8 @@ def convert_printf(line):
     # Remove \n, \t (Python print adds newline automatically)
     inner = inner.replace("\\n", "").replace("\\t", "\t")
 
-    # Check if there are format specifiers
-    specifiers_found = re.findall(r'%[dioufFeEgGxXcsSp]|%l[diouf]', inner)
+    # Check if there are format specifiers correctly formatted
+    specifiers_found = re.findall(r'%[-+ #0]*\d*(?:\.\d+)?[dioufFeEgGxXcsSp]|%l[diouf]', inner)
 
     if not specifiers_found or not args:
         # No substitution needed
@@ -74,8 +102,23 @@ def convert_printf(line):
     # Replace each specifier with {arg}
     result_inner = inner
     for arg in args:
-        # Replace the FIRST remaining specifier
-        result_inner = re.sub(r'%[dioufFeEgGxXcsSp]|%l[diouf]', f'{{{arg}}}', result_inner, count=1)
+        arg = apply_operator_mapping(arg, addressed_vars)
+        # Match the FIRST remaining specifier tracking modifiers
+        match = re.search(r'%([-+ #0]*\d*(?:\.\d+)?)([dioufFeEgGxXcsSp])|%l([diouf])', result_inner)
+        if match:
+            modifiers = match.group(1) or ""
+            spec_type = match.group(2) or match.group(3)
+            
+            if spec_type == 's':
+                # Convert list back to string if it was modified as a char array
+                replacement = f"{{''.join({arg}) if isinstance({arg}, list) else {arg}}}"
+            else:
+                if modifiers:
+                     replacement = f"{{{arg}:{modifiers}{spec_type}}}"
+                else:
+                     replacement = f"{{{arg}}}"
+                     
+            result_inner = result_inner[:match.start()] + replacement + result_inner[match.end():]
 
     return f'print(f"{result_inner}")'
 
@@ -203,16 +246,23 @@ def _split_top_level_commas(s):
     return parts
 
 
-def convert_declaration(line):
+def convert_declaration(line, addressed_vars=None):
+    if not addressed_vars: addressed_vars = set()
     line = line.strip().rstrip(";").strip()
-    tokens = line.split(None, 1)   # split type from the rest
-
-    if len(tokens) < 2:
+    is_char = "char" in line.split()
+    
+    # Remove all C type keywords and modifiers from the beginning
+    type_keywords = {"int", "float", "double", "char", "void", "long", "short", "unsigned", "signed", 
+                     "const", "static", "volatile", "extern", "register", "struct", "union", "enum"}
+    
+    words = line.split()
+    while words and words[0] in type_keywords:
+        words.pop(0)
+    
+    if not words:
         return line
 
-    # Remove the type keyword (first token)
-    rest = tokens[1]
-
+    rest = " ".join(words)
     # Split on top-level commas only
     segments = _split_top_level_commas(rest)
 
@@ -220,9 +270,37 @@ def convert_declaration(line):
     for seg in segments:
         seg = seg.strip()
         if "=" in seg:
-            results.append(seg)         # e.g.  a = 5  or  sum = add(x, y)
+            left, right = seg.split("=", 1)
+            raw_left_name = left.replace("*", "").split("[")[0].split()[-1].strip()
+            
+            left_words = left.split()
+            clean_left = [w for w in left_words if w not in type_keywords and w != "*"]
+            left = " ".join(clean_left).replace("*", "")
+            left = re.sub(r'\[.*?\]', '', left).strip()
+            
+            # Map the RHS normally
+            right_val = apply_operator_mapping(right.strip(), addressed_vars)
+
+            needs_boxing = (raw_left_name in addressed_vars) and ("[" not in seg.split("=")[0])
+
+            if is_char and right_val.startswith('"') and right_val.endswith('"'):
+                results.append(f"{left} = list({right_val})")
+            elif needs_boxing:
+                results.append(f"{left} = [{right_val}]")
+            else:
+                results.append(f"{left} = {right_val}")
         else:
-            results.append(f"{seg} = None")  # e.g.  a  ->  a = None
+            raw_left_name = seg.replace("*", "").split("[")[0].split()[-1].strip()
+            seg_words = seg.split()
+            clean_seg = [w for w in seg_words if w not in type_keywords and w != "*"]
+            seg = " ".join(clean_seg).replace("*", "")
+            seg = re.sub(r'\[.*?\]', '', seg).strip()
+            if seg:
+                needs_boxing = (raw_left_name in addressed_vars) and ("[" not in clean_seg) # originally not an array
+                if needs_boxing:
+                    results.append(f"{seg} = [None]")
+                else:
+                    results.append(f"{seg} = None")
 
     return "\n".join(results)
 
@@ -235,6 +313,13 @@ def generate_intermediate(parsed_data):
     ir_code = []
     nesting_depth = 0
     last_was_func_end = False  # track blank-line insertion between functions
+
+    # Pre-scan identifying variables targeted by the 'address of' & operator
+    addressed_vars = set()
+    for stmt in parsed_data:
+        matches = re.finditer(r'(^|\W)&([a-zA-Z_]\w*)', stmt["line"])
+        for m in matches:
+            addressed_vars.add(m.group(2))
 
     for stmt in parsed_data:
         line     = stmt["line"]
@@ -320,7 +405,12 @@ def generate_intermediate(parsed_data):
         # =========================================
         if stmt_type == "call":
             if nesting_depth == 0: last_was_func_end = False
-            ir_code.append(line.replace(";", "").strip())
+            clean = line.replace(";", "").strip()
+            if clean.startswith("free"):
+                p_var = clean[clean.find("(")+1 : clean.rfind(")")].strip()
+                ir_code.append(f"{p_var} = None")
+            else:
+                ir_code.append(clean)
             continue
 
         # =========================================
@@ -340,7 +430,7 @@ def generate_intermediate(parsed_data):
         # =========================================
         if stmt_type == "declaration":
             if nesting_depth == 0: last_was_func_end = False
-            converted = convert_declaration(line)
+            converted = convert_declaration(line, addressed_vars)
             ir_code.append(converted)
             continue
 
@@ -350,7 +440,14 @@ def generate_intermediate(parsed_data):
         if stmt_type == "assignment":
             if nesting_depth == 0: last_was_func_end = False
             clean = line.strip().rstrip(";")
-            clean = apply_operator_mapping(clean)
+            
+            # Explicitly catch assignments to dereferenced pointers
+            if clean.startswith("*"):
+                left, right = clean.split("=", 1)
+                left = left.strip()[1:] # strip *
+                clean = f"{left}[0] = {right.strip()}"
+                
+            clean = apply_operator_mapping(clean, addressed_vars)
             ir_code.append(clean)
             continue
 
@@ -358,7 +455,7 @@ def generate_intermediate(parsed_data):
         # OUTPUT (printf / puts)
         # =========================================
         if stmt_type == "output":
-            ir_code.append(convert_printf(line))
+            ir_code.append(convert_printf(line, addressed_vars))
             continue
 
         # =========================================
@@ -373,7 +470,7 @@ def generate_intermediate(parsed_data):
         # =========================================
         if stmt_type == "if":
             condition = line[line.find("(")+1 : line.rfind(")")].strip()
-            condition = apply_operator_mapping(condition)
+            condition = apply_operator_mapping(condition, addressed_vars)
             ir_code.append(f"if {condition}:")
             continue
 
@@ -383,7 +480,7 @@ def generate_intermediate(parsed_data):
         if stmt_type == "elif":
             m = re.search(r'else\s+if\s*\((.+)\)', line)
             condition = m.group(1).strip() if m else ""
-            condition = apply_operator_mapping(condition)
+            condition = apply_operator_mapping(condition, addressed_vars)
             ir_code.append(f"elif {condition}:")
             continue
 
@@ -406,7 +503,7 @@ def generate_intermediate(parsed_data):
         # =========================================
         if stmt_type == "while":
             condition = line[line.find("(")+1 : line.rfind(")")].strip()
-            condition = apply_operator_mapping(condition)
+            condition = apply_operator_mapping(condition, addressed_vars)
             ir_code.append(f"while {condition}:")
             continue
 
@@ -427,7 +524,7 @@ def generate_intermediate(parsed_data):
         # UNKNOWN - pass through cleaned
         # =========================================
         clean = line.strip().rstrip(";")
-        clean = apply_operator_mapping(clean)
+        clean = apply_operator_mapping(clean, addressed_vars)
         if clean:
             if nesting_depth == 0:
                 last_was_func_end = False

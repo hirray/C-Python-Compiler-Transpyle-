@@ -2,8 +2,8 @@
 # PHASE 2: SYNTAX ANALYSIS (PARSER)
 # =========================================
 
-# C return types - used to identify function DEFINITIONS
-C_RETURN_TYPES = {"int", "void", "char", "float", "double", "long", "short", "unsigned", "signed"}
+# C return types and modifiers - used to identify declarations and function DEFINITIONS
+C_DECLARATION_KEYWORDS = {"int", "void", "char", "float", "double", "long", "short", "unsigned", "signed", "struct", "union", "enum", "const", "static", "volatile", "extern", "register"}
 
 # Keywords that can appear before '(' but are NOT function names
 CONTROL_KEYWORDS = {"if", "else", "for", "while", "switch", "return", "do"}
@@ -107,7 +107,7 @@ def identify_statement(line):
     # Declaration
     # =========================================
     first_token = stripped.split()[0] if stripped.split() else ""
-    if first_token in C_RETURN_TYPES:
+    if first_token in C_DECLARATION_KEYWORDS:
         # Could be a variable declaration OR a function definition.
         # Function definition: has '(' and ')' and does NOT end with ';'
         clean = stripped.rstrip("{").strip()  # handle: int foo() {
